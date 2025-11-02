@@ -1,0 +1,23 @@
+import * as authController from '../controllers/auth.controller.js';
+import * as userController from '../controllers/userController.js';
+import express from 'express';
+import { protect } from '../middleware/protect.js'; 
+import { restrictTo } from '../middleware/restrictTo.js';
+
+const router = express.Router();
+
+// Register new user
+router.post('/register', authController.registerUser);
+// Verify email
+router.get('/verify-email', authController.verifyUserEmail);
+// Login user
+router.post('/login', authController.loginUser);
+
+// restricted to admin only
+router.post('/promote-to-admin', protect, restrictTo('admin'), authController.promoteToAdmin);
+router.post('/demote-from-admin', protect, restrictTo('admin'), authController.demoteFromAdmin);
+router.get('/get-all-users', protect, restrictTo('admin'), userController.getAllUsers); 
+router.get('/get-user/:id', protect, restrictTo('admin'), userController.getUser);
+
+
+export default router;
