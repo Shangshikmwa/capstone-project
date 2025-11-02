@@ -8,7 +8,7 @@ const router = express.Router();
 
 // Register new user
 router.post('/register', authController.registerUser);
-// Verify email
+// Verify user email
 router.get('/verify-email', authController.verifyUserEmail);
 // Login user
 router.post('/login', authController.loginUser);

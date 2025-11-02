@@ -2,12 +2,13 @@ import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
 import bodyParser from 'body-parser'
-import router from './routes/index.js'
+import router from './SRC/routes/index.js'
+import connectDB from './SRC/config/cloudinary.js';
 
 const app = express()
 dotenv.config();
 
-
+connectDB();
 app.use(cors({origin: "*"}))
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
