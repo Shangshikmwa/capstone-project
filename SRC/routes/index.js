@@ -1,5 +1,5 @@
 import express from 'express';
-import authRoutes from './auth.routes.js';
+import authRoutes from './authRoutes.js';
 import companyRoutes from './companyRoutes.js';
 import vehicleRoutes from './vehicleRoutes.js';
 import publicTripRoutes from './publicTripRoutes.js';

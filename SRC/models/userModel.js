@@ -15,6 +15,13 @@ const userSchema = new mongoose.Schema({
       lowercase: true,
       validate: [validator.isEmail, 'Invalid email']
     },
+    phone: {
+      type: String,
+      required: [true, 'Phone is required'],
+      unique: true,
+      trim: true,
+      validate: [validator.isMobilePhone, 'Invalid phone number']
+    },
     password: {
       type: String,
       required: [true, 'Password is required'],

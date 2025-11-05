@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import Trip from '../models/tripsModel.js';
 import Booking from '../models/bookingModel.js';
 import { generateBookingRef } from '../utils/refGenerator.js';
+import sendEmail from '../utils/sendEmail.js';
 
 export const getTrips = asyncHandler(async (req, res) => {
   const { from, to, date, page = 1, limit = 20, minSeats, priceMin, priceMax, sort = 'departureDate' } = req.query;
@@ -91,151 +92,299 @@ export const getTripById = asyncHandler(async (req, res) => {
 
 
 export const bookTrip = asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  const { seatNumbers = null, seatsCount = null, customer, paymentMethod = 'unpaid' } = req.body || {};
-
-  if (!customer || !customer.name || !customer.phone) { res.status(400); throw new Error('Customer name and phone are required'); }
-  if (!mongoose.Types.ObjectId.isValid(id)) { res.status(400); throw new Error('Invalid trip id'); }
-
-  const trip = await Trip.findOne({ _id: id, isDeleted: false });
-  if (!trip) { res.status(404); throw new Error('Trip not found'); }
-  if (trip.status !== 'scheduled') { res.status(400); throw new Error('Trip is not schedulable'); }
-
-  const toBookCount = Array.isArray(seatNumbers) && seatNumbers.length ? seatNumbers.length : (seatsCount ? Number(seatsCount) : 1);
-  if (!Number.isInteger(toBookCount) || toBookCount <= 0) { res.status(400); throw new Error('Invalid seats count'); }
-  if (trip.availableSeats < toBookCount) { res.status(409); throw new Error('Not enough seats available'); }
-
-  // If seatNumbers provided: validate format and uniqueness
-  let seatsRequested = [];
-  if (Array.isArray(seatNumbers) && seatNumbers.length) {
-    const uniq = new Set(seatNumbers.map(String));
-    if (uniq.size !== seatNumbers.length) { res.status(400); throw new Error('Duplicate seat numbers in request'); }
-    seatsRequested = seatNumbers.map(String);
-  }
-
-  // If no specific seats requested, pick first N available
-  if (!seatsRequested.length) {
-    seatsRequested = [];
-    for (const s of trip.seats) {
-      if (s.isAvailable) seatsRequested.push(s.seatNumber);
-      if (seatsRequested.length === toBookCount) break;
+    const { id } = req.params;
+    const { 
+      seatNumbers = null, 
+      seatsCount = null, 
+      customer, 
+      paymentMethod = 'card', 
+      email, 
+      returnUrl = `${process.env.FRONTEND_URL}/payment-callback` // Frontend callback URL
+    } = req.body || {};
+  
+    if (!customer || !customer.name || !customer.phone) { 
+      res.status(400); 
+      throw new Error('Customer name and phone are required'); 
     }
-    if (seatsRequested.length !== toBookCount) { res.status(409); throw new Error('Not enough available seats to auto-assign'); }
-  }
-
-  // Transactional booking if possible
-  const BookingModel = Booking;
-  const sessionAvailable = typeof mongoose.startSession === 'function';
-
-  const bookingRef = generateBookingRef();
-
-  if (sessionAvailable) {
-    const session = await mongoose.startSession();
+    
+    if (!email) {
+      res.status(400);
+      throw new Error('Email is required for payment');
+    }
+  
+    if (!mongoose.Types.ObjectId.isValid(id)) { 
+      res.status(400); 
+      throw new Error('Invalid trip id'); 
+    }
+  
+    const trip = await Trip.findOne({ _id: id, isDeleted: false });
+    if (!trip) { res.status(404); throw new Error('Trip not found'); }
+    if (trip.status !== 'scheduled') { res.status(400); throw new Error('Trip is not schedulable'); }
+  
+    const toBookCount = Array.isArray(seatNumbers) && seatNumbers.length ? seatNumbers.length : (seatsCount ? Number(seatsCount) : 1);
+    if (!Number.isInteger(toBookCount) || toBookCount <= 0) { res.status(400); throw new Error('Invalid seats count'); }
+    if (trip.availableSeats < toBookCount) { res.status(409); throw new Error('Not enough seats available'); }
+  
+    // Seat selection
+    let seatsRequested = [];
+    if (Array.isArray(seatNumbers) && seatNumbers.length) {
+      const uniq = new Set(seatNumbers.map(String));
+      if (uniq.size !== seatNumbers.length) { res.status(400); throw new Error('Duplicate seat numbers in request'); }
+      seatsRequested = seatNumbers.map(String);
+    }
+  
+    if (!seatsRequested.length) {
+      seatsRequested = [];
+      for (const s of trip.seats) {
+        if (s.isAvailable) seatsRequested.push(s.seatNumber);
+        if (seatsRequested.length === toBookCount) break;
+      }
+      if (seatsRequested.length !== toBookCount) { res.status(409); throw new Error('Not enough available seats to auto-assign'); }
+    }
+  
+    const totalAmount = seatsRequested.length * trip.pricePerSeat;
+    const bookingRef = generateBookingRef();
+  
+    // Create booking with pending status
+    const bookingData = {
+      company: trip.company,
+      trip: trip._id,
+      vehicle: trip.vehicle,
+      user: req.user ? req.user._id : null,
+      seatNumbers: seatsRequested,
+      seats: seatsRequested.length,
+      pricePerSeat: trip.pricePerSeat,
+      totalAmount,
+      customer: { 
+        name: customer.name, 
+        phone: customer.phone, 
+        email: email || customer.email || '' 
+      },
+      paymentMethod,
+      paymentStatus: 'pending',
+      reference: bookingRef,
+      status: 'pending' // Changed to pending until payment is verified
+    };
+  
+    // Initialize Paystack payment
     try {
-      session.startTransaction();
-
-      // reload trip inside session
-      const freshTrip = await Trip.findOne({ _id: trip._id }).session(session);
-      if (!freshTrip || freshTrip.isDeleted || freshTrip.status !== 'scheduled') {
-        await session.abortTransaction(); session.endSession();
-        res.status(400); throw new Error('Trip no longer available');
-      }
-      if (freshTrip.availableSeats < seatsRequested.length) {
-        await session.abortTransaction(); session.endSession();
-        res.status(409); throw new Error('Not enough seats available');
-      }
-
-      // ensure requested seats are available
-      const seatMap = new Map(freshTrip.seats.map(s => [s.seatNumber, s.isAvailable]));
-      const unavailable = seatsRequested.filter(sn => !seatMap.has(sn) || seatMap.get(sn) === false);
-      if (unavailable.length) {
-        await session.abortTransaction(); session.endSession();
-        res.status(409); throw new Error(`Seats not available: ${unavailable.join(',')}`);
-      }
-
-      // create booking doc
-      const bookingDoc = {
-        company: freshTrip.company,
-        trip: freshTrip._id,
-        vehicle: freshTrip.vehicle,
-        user: req.user ? req.user._id : null,
-        seatNumbers: seatsRequested,
-        seats: seatsRequested.length,
-        pricePerSeat: freshTrip.pricePerSeat,
-        totalAmount: seatsRequested.length * freshTrip.pricePerSeat,
-        customer: { name: customer.name, phone: customer.phone, email: customer.email || '' },
-        paymentMethod,
-        paymentStatus: paymentMethod === 'unpaid' ? 'pending' : 'pending',
-        reference: bookingRef,
-        status: 'confirmed'
-      };
-      const created = await BookingModel.create([bookingDoc], { session });
-      const booking = created[0];
-
-      // build arrayFilters and set ops to mark seats booked
-      const arrayFilters = seatsRequested.map((sn, idx) => ({ [`s${idx}.seatNumber`]: sn, [`s${idx}.isAvailable`]: true }));
-      const setOps = {};
-      seatsRequested.forEach((sn, idx) => {
-        setOps[`seats.$[s${idx}].isAvailable`] = false;
-        setOps[`seats.$[s${idx}].bookingId`] = booking._id;
-      });
-
-      const updateRes = await Trip.updateOne(
-        { _id: freshTrip._id, availableSeats: { $gte: seatsRequested.length }, status: 'scheduled' },
-        { $inc: { availableSeats: -seatsRequested.length, bookingsCount: seatsRequested.length }, $set: setOps },
-        { arrayFilters, session }
+      const paymentData = await initializePayment(
+        email,
+        totalAmount,
+        bookingRef,
+        {
+          booking_reference: bookingRef,
+          trip_id: trip._id.toString(),
+          seats: seatsRequested.join(','),
+          customer_name: customer.name,
+          customer_phone: customer.phone
+        }
       );
-
-      if (updateRes.modifiedCount !== 1) {
-        await session.abortTransaction(); session.endSession();
-        res.status(500); throw new Error('Failed to reserve seats (concurrency conflict)');
-      }
-
-      await session.commitTransaction();
-      session.endSession();
-
-      return res.status(201).json({ message: 'Booking confirmed', booking, seats: seatsRequested });
-    } catch (err) {
-      try { await session.abortTransaction(); } catch (e) {}
-      session.endSession();
-      throw err;
+  
+      // Save booking to database (without reserving seats yet)
+      const booking = await Booking.create(bookingData);
+  
+      res.status(200).json({
+        message: 'Payment initialization successful',
+        booking: {
+          id: booking._id,
+          reference: booking.reference,
+          totalAmount,
+          seats: seatsRequested
+        },
+        payment: {
+          authorizationUrl: paymentData.authorization_url,
+          accessCode: paymentData.access_code,
+          reference: paymentData.reference
+        },
+        redirectUrl: returnUrl
+      });
+  
+    } catch (error) {
+      res.status(500);
+      throw new Error(`Payment initialization failed: ${error.message}`);
     }
-  }
-
-  // Fallback (no transactions) — try conditional update with arrayFilters, then create booking
-  const tmpBookingId = mongoose.Types.ObjectId();
-  const arrayFiltersFallback = seatsRequested.map((sn, idx) => ({ [`s${idx}.seatNumber`]: sn, [`s${idx}.isAvailable`]: true }));
-  const setOpsFallback = {};
-  seatsRequested.forEach((sn, idx) => {
-    setOpsFallback[`seats.$[s${idx}].isAvailable`] = false;
-    setOpsFallback[`seats.$[s${idx}].bookingId`] = tmpBookingId;
   });
-
-  const updateResFallback = await Trip.updateOne(
-    { _id: trip._id, availableSeats: { $gte: seatsRequested.length }, status: 'scheduled' },
-    { $inc: { availableSeats: -seatsRequested.length, bookingsCount: seatsRequested.length }, $set: setOpsFallback },
-    { arrayFilters: arrayFiltersFallback }
-  );
-  if (updateResFallback.modifiedCount !== 1) {
-    res.status(409); throw new Error('Failed to reserve seats (concurrency conflict or seats unavailable)');
-  }
-
-  // create booking record with same id
-  const bookingFallback = await Booking.create({
-    _id: tmpBookingId,
-    company: trip.company,
-    trip: trip._id,
-    vehicle: trip.vehicle,
-    seatNumbers: seatsRequested,
-    seats: seatsRequested.length,
-    pricePerSeat: trip.pricePerSeat,
-    totalAmount: seatsRequested.length * trip.pricePerSeat,
-    customer: { name: customer.name, phone: customer.phone, email: customer.email || '' },
-    paymentMethod,
-    paymentStatus: 'pending',
-    reference: bookingRef,
-    status: 'confirmed'
+  
+  //endpoint to verify payment and confirm booking
+  export const verifyBookingPayment = asyncHandler(async (req, res) => {
+    const { reference } = req.body;
+  
+    if (!reference) {
+      res.status(400);
+      throw new Error('Payment reference is required');
+    }
+  
+    try {
+      // Verify payment with Paystack
+      const payment = await verifyPayment(reference);
+  
+      if (payment.status !== 'success') {
+        res.status(400);
+        throw new Error(`Payment failed: ${payment.gateway_response}`);
+      }
+  
+      // Find the pending booking
+      const booking = await Booking.findOne({ reference });
+      if (!booking) {
+        res.status(404);
+        throw new Error('Booking not found');
+      }
+  
+      if (booking.status === 'confirmed') {
+        return res.json({ 
+          message: 'Booking already confirmed', 
+          booking,
+          payment: { status: 'success' }
+        });
+      }
+  
+      const session = await mongoose.startSession();
+      try {
+        session.startTransaction();
+  
+        // Get fresh trip data
+        const trip = await Trip.findOne({ _id: booking.trip }).session(session);
+        if (!trip || trip.status !== 'scheduled') {
+          await session.abortTransaction();
+          session.endSession();
+          res.status(400);
+          throw new Error('Trip no longer available');
+        }
+  
+        // Verify seats are still available
+        const seatMap = new Map(trip.seats.map(s => [s.seatNumber, s.isAvailable]));
+        const unavailableSeats = booking.seatNumbers.filter(sn => !seatMap.has(sn) || seatMap.get(sn) === false);
+        
+        if (unavailableSeats.length > 0) {
+          await session.abortTransaction();
+          session.endSession();
+          res.status(409);
+          throw new Error(`Seats no longer available: ${unavailableSeats.join(', ')}`);
+        }
+  
+        // Reserve seats
+        const arrayFilters = booking.seatNumbers.map((sn, idx) => ({
+          [`s${idx}.seatNumber`]: sn,
+          [`s${idx}.isAvailable`]: true
+        }));
+  
+        const setOps = {};
+        booking.seatNumbers.forEach((sn, idx) => {
+          setOps[`seats.$[s${idx}].isAvailable`] = false;
+          setOps[`seats.$[s${idx}].bookingId`] = booking._id;
+        });
+  
+        const updateResult = await Trip.updateOne(
+          { _id: trip._id, availableSeats: { $gte: booking.seats } },
+          { 
+            $inc: { availableSeats: -booking.seats, bookingsCount: booking.seats },
+            $set: setOps
+          },
+          { arrayFilters, session }
+        );
+  
+        if (updateResult.modifiedCount !== 1) {
+          await session.abortTransaction();
+          session.endSession();
+          res.status(409);
+          throw new Error('Failed to reserve seats (concurrency conflict)');
+        }
+  
+        // Update booking status
+        booking.paymentStatus = 'paid';
+        booking.status = 'confirmed';
+        booking.paidAt = new Date();
+        booking.paymentDetails = {
+          gateway: 'paystack',
+          reference: payment.reference,
+          channel: payment.channel,
+          paidAt: payment.paid_at
+        };
+  
+        await booking.save({ session });
+  
+        await session.commitTransaction();
+        session.endSession();
+  
+        res.json({
+          message: 'Booking confirmed successfully',
+          booking,
+          payment: {
+            status: 'success',
+            reference: payment.reference,
+            amount: payment.amount / 100, // Convert back from kobo
+            paidAt: payment.paid_at
+          }
+        });
+  
+      } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        throw error;
+      }
+  
+    } catch (error) {
+      res.status(500);
+      throw new Error(`Payment verification failed: ${error.message}`);
+    }
   });
-
-  return res.status(201).json({ message: 'Booking confirmed', booking: bookingFallback, seats: seatsRequested });
-});
+  
+  // Webhook endpoint for Paystack (recommended for production)
+  export const paymentWebhook = asyncHandler(async (req, res) => {
+    const secret = req.headers['x-paystack-signature'];
+    const crypto = await import('crypto');
+    
+    // Verify webhook signature
+    const hash = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
+      .update(JSON.stringify(req.body))
+      .digest('hex');
+    
+    if (hash !== secret) {
+      return res.status(400).send('Invalid signature');
+    }
+  
+    const event = req.body;
+    
+    if (event.event === 'charge.success') {
+      const reference = event.data.reference;
+      
+      try {
+        // Find and update booking similar to verifyBookingPayment
+        const booking = await Booking.findOne({ reference });
+        if (booking && booking.status === 'pending') {
+          // Process booking confirmation (similar to verifyBookingPayment logic)
+          booking.paymentStatus = 'paid';
+          booking.status = 'confirmed';
+          booking.paidAt = new Date();
+          booking.paymentDetails = {
+            gateway: 'paystack',
+            reference: event.data.reference,
+            channel: event.data.channel,
+            paidAt: event.data.paid_at
+          };
+          
+          await booking.save();
+          
+          await sendEmail({
+            to: booking.customer.email,
+            subject: 'Booking confirmed',
+            html: `<p>Your booking has been confirmed.</p>
+            <p>Booking reference: ${booking.reference}</p>
+            <p>Booking date: ${booking.createdAt.toLocaleDateString()}</p>
+            <p>Booking time: ${booking.createdAt.toLocaleTimeString()}</p>
+            <p>Booking amount: ${booking.totalAmount}</p>
+            <p>Booking seats: ${booking.seatNumbers.join(', ')}</p>
+            <p>Booking status: ${booking.status}</p>
+            <p>Booking payment status: ${booking.paymentStatus}</p>
+            <p>Booking payment reference: ${booking.paymentDetails.reference}</p>   
+          `});
+        }
+      } catch (error) {
+        console.error('Webhook processing error:', error);
+      }
+    }
+  
+    res.sendStatus(200);
+  });
+  

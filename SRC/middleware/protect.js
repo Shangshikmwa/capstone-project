@@ -1,6 +1,6 @@
 // SRC/middleware/protect.js
 import jwt from 'jsonwebtoken';
-import User from '../models/user.models.js';
+import User from '../models/userModel.js';
 
 
 const getTokenFromRequest = (req) => {

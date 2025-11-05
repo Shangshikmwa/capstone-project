@@ -1,4 +1,4 @@
-import * as authController from '../controllers/auth.controller.js';
+import * as authController from '../controllers/authController.js';
 import * as userController from '../controllers/userController.js';
 import express from 'express';
 import { protect } from '../middleware/protect.js'; 

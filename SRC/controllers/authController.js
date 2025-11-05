@@ -1,4 +1,4 @@
-import User from '../models/user.models.js';
+import User from '../models/userModel.js';
 import jwt from 'jsonwebtoken';
 import sendEmail from '../utils/sendEmail.js';
 import crypto from 'crypto';
@@ -9,7 +9,7 @@ const signToken = (userId, expiresIn = '1d') =>
 // Register user
 export const registerUser = async (req, res) => {
   try {
-    const { name, email, password, confirmPassword } = req.body;
+    const { name, email, password, confirmPassword, phone } = req.body;
 
     if (password !== confirmPassword) {
       return res.status(400).json({ success: false, error: 'Passwords do not match' });
@@ -20,7 +20,7 @@ export const registerUser = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email already registered' });
     }
 
-    const newUser = await User.create({ name, email, password });
+    const newUser = await User.create({ name, email, password, phone });
 
     // Generate verification token that expires in 1h)
     const verificationToken = signToken(newUser._id, '1h');
@@ -45,7 +45,8 @@ export const registerUser = async (req, res) => {
       user: {
         id: newUser._id,
         name: newUser.name,
-        email: newUser.email
+        email: newUser.email,
+        phone: newUser.phone
       }
     });
   } catch (error) {
@@ -141,6 +142,7 @@ export const loginUser = async (req, res) => {
             id: user._id,
             name: user.name,
             email: user.email,
+            phone: user.phone,
             role: user.role
             }
         }
