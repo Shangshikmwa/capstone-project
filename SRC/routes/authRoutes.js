@@ -12,6 +12,11 @@ router.post('/register', authController.registerUser);
 router.get('/verify-email', authController.verifyUserEmail);
 // Login user
 router.post('/login', authController.loginUser);
+// Forgot password
+router.post('/forgot-password', authController.forgotPassword);
+// Reset password
+router.post('/reset-password', authController.resetPassword);
+
 
 // restricted to admin only
 router.post('/promote-to-admin', protect, restrictTo('admin'), authController.promoteToAdmin);

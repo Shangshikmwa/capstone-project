@@ -5,6 +5,7 @@ import Trip from '../models/tripsModel.js';
 import Booking from '../models/bookingModel.js';
 import { generateBookingRef } from '../utils/refGenerator.js';
 import sendEmail from '../utils/sendEmail.js';
+import { initializePayment, verifyPayment } from '../services/paymentService.js';
 
 export const getTrips = asyncHandler(async (req, res) => {
   const { from, to, date, page = 1, limit = 20, minSeats, priceMin, priceMax, sort = 'departureDate' } = req.query;
@@ -94,297 +95,480 @@ export const getTripById = asyncHandler(async (req, res) => {
 export const bookTrip = asyncHandler(async (req, res) => {
     const { id } = req.params;
     const { 
-      seatNumbers = null, 
-      seatsCount = null, 
-      customer, 
-      paymentMethod = 'card', 
-      email, 
-      returnUrl = `${process.env.FRONTEND_URL}/payment-callback` // Frontend callback URL
+        seatNumbers = null, 
+        seatsCount = null, 
+        customer, 
+        paymentMethod = 'card', 
+        email, 
+        callbackUrl = `${process.env.FRONTEND_URL}/payment-callback`
     } = req.body || {};
-  
+
     if (!customer || !customer.name || !customer.phone) { 
-      res.status(400); 
-      throw new Error('Customer name and phone are required'); 
+        res.status(400); 
+        throw new Error('Customer name and phone are required'); 
     }
     
     if (!email) {
-      res.status(400);
-      throw new Error('Email is required for payment');
+        res.status(400);
+        throw new Error('Email is required for payment');
     }
-  
+
     if (!mongoose.Types.ObjectId.isValid(id)) { 
-      res.status(400); 
-      throw new Error('Invalid trip id'); 
+        res.status(400); 
+        throw new Error('Invalid trip id'); 
     }
-  
+
     const trip = await Trip.findOne({ _id: id, isDeleted: false });
     if (!trip) { res.status(404); throw new Error('Trip not found'); }
     if (trip.status !== 'scheduled') { res.status(400); throw new Error('Trip is not schedulable'); }
-  
+
     const toBookCount = Array.isArray(seatNumbers) && seatNumbers.length ? seatNumbers.length : (seatsCount ? Number(seatsCount) : 1);
     if (!Number.isInteger(toBookCount) || toBookCount <= 0) { res.status(400); throw new Error('Invalid seats count'); }
     if (trip.availableSeats < toBookCount) { res.status(409); throw new Error('Not enough seats available'); }
-  
-    // Seat selection
+
+    // Check seat availability without reserving
     let seatsRequested = [];
     if (Array.isArray(seatNumbers) && seatNumbers.length) {
-      const uniq = new Set(seatNumbers.map(String));
-      if (uniq.size !== seatNumbers.length) { res.status(400); throw new Error('Duplicate seat numbers in request'); }
-      seatsRequested = seatNumbers.map(String);
-    }
-  
-    if (!seatsRequested.length) {
-      seatsRequested = [];
-      for (const s of trip.seats) {
-        if (s.isAvailable) seatsRequested.push(s.seatNumber);
-        if (seatsRequested.length === toBookCount) break;
-      }
-      if (seatsRequested.length !== toBookCount) { res.status(409); throw new Error('Not enough available seats to auto-assign'); }
-    }
-  
-    const totalAmount = seatsRequested.length * trip.pricePerSeat;
-    const bookingRef = generateBookingRef();
-  
-    // Create booking with pending status
-    const bookingData = {
-      company: trip.company,
-      trip: trip._id,
-      vehicle: trip.vehicle,
-      user: req.user ? req.user._id : null,
-      seatNumbers: seatsRequested,
-      seats: seatsRequested.length,
-      pricePerSeat: trip.pricePerSeat,
-      totalAmount,
-      customer: { 
-        name: customer.name, 
-        phone: customer.phone, 
-        email: email || customer.email || '' 
-      },
-      paymentMethod,
-      paymentStatus: 'pending',
-      reference: bookingRef,
-      status: 'pending' // Changed to pending until payment is verified
-    };
-  
-    // Initialize Paystack payment
-    try {
-      const paymentData = await initializePayment(
-        email,
-        totalAmount,
-        bookingRef,
-        {
-          booking_reference: bookingRef,
-          trip_id: trip._id.toString(),
-          seats: seatsRequested.join(','),
-          customer_name: customer.name,
-          customer_phone: customer.phone
-        }
-      );
-  
-      // Save booking to database (without reserving seats yet)
-      const booking = await Booking.create(bookingData);
-  
-      res.status(200).json({
-        message: 'Payment initialization successful',
-        booking: {
-          id: booking._id,
-          reference: booking.reference,
-          totalAmount,
-          seats: seatsRequested
-        },
-        payment: {
-          authorizationUrl: paymentData.authorization_url,
-          accessCode: paymentData.access_code,
-          reference: paymentData.reference
-        },
-        redirectUrl: returnUrl
-      });
-  
-    } catch (error) {
-      res.status(500);
-      throw new Error(`Payment initialization failed: ${error.message}`);
-    }
-  });
-  
-  //endpoint to verify payment and confirm booking
-  export const verifyBookingPayment = asyncHandler(async (req, res) => {
-    const { reference } = req.body;
-  
-    if (!reference) {
-      res.status(400);
-      throw new Error('Payment reference is required');
-    }
-  
-    try {
-      // Verify payment with Paystack
-      const payment = await verifyPayment(reference);
-  
-      if (payment.status !== 'success') {
-        res.status(400);
-        throw new Error(`Payment failed: ${payment.gateway_response}`);
-      }
-  
-      // Find the pending booking
-      const booking = await Booking.findOne({ reference });
-      if (!booking) {
-        res.status(404);
-        throw new Error('Booking not found');
-      }
-  
-      if (booking.status === 'confirmed') {
-        return res.json({ 
-          message: 'Booking already confirmed', 
-          booking,
-          payment: { status: 'success' }
-        });
-      }
-  
-      const session = await mongoose.startSession();
-      try {
-        session.startTransaction();
-  
-        // Get fresh trip data
-        const trip = await Trip.findOne({ _id: booking.trip }).session(session);
-        if (!trip || trip.status !== 'scheduled') {
-          await session.abortTransaction();
-          session.endSession();
-          res.status(400);
-          throw new Error('Trip no longer available');
-        }
-  
-        // Verify seats are still available
+        const uniq = new Set(seatNumbers.map(String));
+        if (uniq.size !== seatNumbers.length) { res.status(400); throw new Error('Duplicate seat numbers in request'); }
+        
+        // Verify seats exist and are available
         const seatMap = new Map(trip.seats.map(s => [s.seatNumber, s.isAvailable]));
-        const unavailableSeats = booking.seatNumbers.filter(sn => !seatMap.has(sn) || seatMap.get(sn) === false);
+        const unavailableSeats = seatNumbers.filter(sn => !seatMap.has(sn) || seatMap.get(sn) === false);
         
         if (unavailableSeats.length > 0) {
-          await session.abortTransaction();
-          session.endSession();
-          res.status(409);
-          throw new Error(`Seats no longer available: ${unavailableSeats.join(', ')}`);
+            res.status(409);
+            throw new Error(`Seats not available: ${unavailableSeats.join(', ')}`);
         }
-  
-        // Reserve seats
-        const arrayFilters = booking.seatNumbers.map((sn, idx) => ({
-          [`s${idx}.seatNumber`]: sn,
-          [`s${idx}.isAvailable`]: true
-        }));
-  
-        const setOps = {};
-        booking.seatNumbers.forEach((sn, idx) => {
-          setOps[`seats.$[s${idx}].isAvailable`] = false;
-          setOps[`seats.$[s${idx}].bookingId`] = booking._id;
-        });
-  
-        const updateResult = await Trip.updateOne(
-          { _id: trip._id, availableSeats: { $gte: booking.seats } },
-          { 
-            $inc: { availableSeats: -booking.seats, bookingsCount: booking.seats },
-            $set: setOps
-          },
-          { arrayFilters, session }
-        );
-  
-        if (updateResult.modifiedCount !== 1) {
-          await session.abortTransaction();
-          session.endSession();
-          res.status(409);
-          throw new Error('Failed to reserve seats (concurrency conflict)');
-        }
-  
-        // Update booking status
-        booking.paymentStatus = 'paid';
-        booking.status = 'confirmed';
-        booking.paidAt = new Date();
-        booking.paymentDetails = {
-          gateway: 'paystack',
-          reference: payment.reference,
-          channel: payment.channel,
-          paidAt: payment.paid_at
-        };
-  
-        await booking.save({ session });
-  
-        await session.commitTransaction();
-        session.endSession();
-  
-        res.json({
-          message: 'Booking confirmed successfully',
-          booking,
-          payment: {
-            status: 'success',
-            reference: payment.reference,
-            amount: payment.amount / 100, // Convert back from kobo
-            paidAt: payment.paid_at
-          }
-        });
-  
-      } catch (error) {
-        await session.abortTransaction();
-        session.endSession();
-        throw error;
-      }
-  
-    } catch (error) {
-      res.status(500);
-      throw new Error(`Payment verification failed: ${error.message}`);
+        
+        seatsRequested = seatNumbers.map(String);
     }
-  });
-  
-  // Webhook endpoint for Paystack (recommended for production)
-  export const paymentWebhook = asyncHandler(async (req, res) => {
+
+    if (!seatsRequested.length) {
+        // Find available seats without reserving them
+        seatsRequested = trip.seats
+            .filter(s => s.isAvailable)
+            .slice(0, toBookCount)
+            .map(s => s.seatNumber);
+            
+        if (seatsRequested.length !== toBookCount) { 
+            res.status(409); 
+            throw new Error('Not enough available seats to auto-assign'); 
+        }
+    }
+
+    const totalAmount = seatsRequested.length * trip.pricePerSeat;
+    const bookingRef = generateBookingRef();
+
+    const bookingData = {
+        company: trip.company,
+        trip: trip._id,
+        vehicle: trip.vehicle,
+        user: req.user ? req.user._id : null,
+        seatNumbers: seatsRequested,
+        seats: seatsRequested.length,
+        pricePerSeat: trip.pricePerSeat,
+        totalAmount,
+        customer: { 
+            name: customer.name, 
+            phone: customer.phone, 
+            email: email || customer.email || '' 
+        },
+        paymentMethod,
+        paymentStatus: 'pending',
+        reference: bookingRef,
+        status: 'pending'
+    };
+
+    try {
+        const paymentData = await initializePayment(
+            email,
+            totalAmount,
+            bookingRef,
+            {
+                booking_reference: bookingRef,
+                trip_id: trip._id.toString(),
+                seats: seatsRequested.join(','),
+                customer_name: customer.name,
+                customer_phone: customer.phone
+            },
+            callbackUrl
+        );
+
+        // Create booking WITHOUT reserving seats
+        const booking = await Booking.create(bookingData);
+
+        res.status(200).json({
+            message: 'Payment initialization successful',
+            booking: {
+                id: booking._id,
+                reference: booking.reference,
+                totalAmount,
+                seats: seatsRequested
+            },
+            payment: {
+                authorizationUrl: paymentData.authorization_url,
+                accessCode: paymentData.access_code,
+                reference: paymentData.reference
+            },
+            callbackUrl: callbackUrl
+        });
+
+    } catch (error) {
+        res.status(500);
+        throw new Error(`Payment initialization failed: ${error.message}`);
+    }
+});
+
+export const verifyBookingPayment = asyncHandler(async (req, res) => {
+    const { reference } = req.body;
+
+    if (!reference) {
+        res.status(400);
+        throw new Error('Payment reference is required');
+    }
+
+    try {
+        const payment = await verifyPayment(reference);
+
+        if (payment.status !== 'success') {
+            res.status(400);
+            throw new Error(`Payment failed: ${payment.gateway_response}`);
+        }
+
+        const booking = await Booking.findOne({ reference });
+        if (!booking) {
+            res.status(404);
+            throw new Error('Booking not found');
+        }
+
+        if (booking.status === 'confirmed') {
+            return res.json({ 
+                message: 'Booking already confirmed', 
+                booking,
+                payment: { status: 'success' }
+            });
+        }
+
+        const session = await mongoose.startSession();
+        
+        try {
+            session.startTransaction();
+
+            const trip = await Trip.findOne({ _id: booking.trip }).session(session);
+            if (!trip || trip.status !== 'scheduled') {
+                await session.abortTransaction();
+                res.status(400);
+                throw new Error('Trip no longer available');
+            }
+
+            const seatMap = new Map(trip.seats.map(s => [s.seatNumber, s.isAvailable]));
+            const unavailableSeats = booking.seatNumbers.filter(sn => !seatMap.has(sn) || seatMap.get(sn) === false);
+            
+            if (unavailableSeats.length > 0) {
+                await session.abortTransaction();
+                res.status(409);
+                throw new Error(`Seats no longer available: ${unavailableSeats.join(', ')}`);
+            }
+
+            const arrayFilters = booking.seatNumbers.map((sn, idx) => ({
+                [`s${idx}.seatNumber`]: sn,
+                [`s${idx}.isAvailable`]: true
+            }));
+
+            const setOps = {};
+            booking.seatNumbers.forEach((sn, idx) => {
+                setOps[`seats.$[s${idx}].isAvailable`] = false;
+                setOps[`seats.$[s${idx}].bookingId`] = booking._id;
+            });
+
+            const updateResult = await Trip.updateOne(
+                { _id: trip._id, availableSeats: { $gte: booking.seats } },
+                { 
+                    $inc: { availableSeats: -booking.seats, bookingsCount: booking.seats },
+                    $set: setOps
+                },
+                { arrayFilters, session }
+            );
+
+            if (updateResult.modifiedCount !== 1) {
+                await session.abortTransaction();
+                res.status(409);
+                throw new Error('Failed to reserve seats');
+            }
+
+            booking.paymentStatus = 'paid';
+            booking.status = 'confirmed';
+            booking.paidAt = new Date();
+            booking.paymentDetails = {
+                gateway: 'paystack',
+                reference: payment.reference,
+                channel: payment.channel,
+                paidAt: payment.paid_at
+            };
+
+            await booking.save({ session });
+            await session.commitTransaction();
+
+            res.json({
+                message: 'Booking confirmed successfully',
+                booking,
+                payment: {
+                    status: 'success',
+                    reference: payment.reference,
+                    amount: payment.amount / 100,
+                    paidAt: payment.paid_at
+                }
+            });
+
+        } catch (error) {
+            if (session.inTransaction()) {
+                await session.abortTransaction();
+            }
+            throw error;
+        } finally {
+            session.endSession();
+        }
+
+    } catch (error) {
+        res.status(500);
+        throw new Error(`Payment verification failed: ${error.message}`);
+    }
+});
+
+export const paymentWebhook = asyncHandler(async (req, res) => {
     const secret = req.headers['x-paystack-signature'];
     const crypto = await import('crypto');
     
-    // Verify webhook signature
     const hash = crypto.createHmac('sha512', process.env.PAYSTACK_SECRET_KEY)
-      .update(JSON.stringify(req.body))
-      .digest('hex');
+        .update(JSON.stringify(req.body))
+        .digest('hex');
     
     if (hash !== secret) {
-      return res.status(400).send('Invalid signature');
+        return res.status(400).send('Invalid signature');
     }
-  
+
     const event = req.body;
     
     if (event.event === 'charge.success') {
-      const reference = event.data.reference;
-      
-      try {
-        // Find and update booking similar to verifyBookingPayment
-        const booking = await Booking.findOne({ reference });
-        if (booking && booking.status === 'pending') {
-          // Process booking confirmation (similar to verifyBookingPayment logic)
-          booking.paymentStatus = 'paid';
-          booking.status = 'confirmed';
-          booking.paidAt = new Date();
-          booking.paymentDetails = {
-            gateway: 'paystack',
-            reference: event.data.reference,
-            channel: event.data.channel,
-            paidAt: event.data.paid_at
-          };
-          
-          await booking.save();
-          
-          await sendEmail({
-            to: booking.customer.email,
-            subject: 'Booking confirmed',
-            html: `<p>Your booking has been confirmed.</p>
-            <p>Booking reference: ${booking.reference}</p>
-            <p>Booking date: ${booking.createdAt.toLocaleDateString()}</p>
-            <p>Booking time: ${booking.createdAt.toLocaleTimeString()}</p>
-            <p>Booking amount: ${booking.totalAmount}</p>
-            <p>Booking seats: ${booking.seatNumbers.join(', ')}</p>
-            <p>Booking status: ${booking.status}</p>
-            <p>Booking payment status: ${booking.paymentStatus}</p>
-            <p>Booking payment reference: ${booking.paymentDetails.reference}</p>   
-          `});
+        const reference = event.data.reference;
+        
+        try {
+            const booking = await Booking.findOne({ reference });
+            if (booking && booking.status === 'pending') {
+                booking.paymentStatus = 'paid';
+                booking.status = 'confirmed';
+                booking.paidAt = new Date();
+                booking.paymentDetails = {
+                    gateway: 'paystack',
+                    reference: event.data.reference,
+                    channel: event.data.channel,
+                    paidAt: event.data.paid_at
+                };
+                
+                await booking.save();
+                
+                await sendEmail({
+                    to: booking.customer.email,
+                    subject: 'Booking confirmed',
+                    html: `<p>Your booking has been confirmed.</p>
+                    <p>Booking reference: ${booking.reference}</p>
+                    <p>Booking date: ${booking.createdAt.toLocaleDateString()}</p>
+                    <p>Booking time: ${booking.createdAt.toLocaleTimeString()}</p>
+                    <p>Booking amount: ${booking.totalAmount}</p>
+                    <p>Booking seats: ${booking.seatNumbers.join(', ')}</p>
+                    <p>Booking status: ${booking.status}</p>
+                    <p>Booking payment status: ${booking.paymentStatus}</p>
+                    <p>Booking payment reference: ${booking.paymentDetails.reference}</p>`
+                });
+            }
+        } catch (error) {
+            console.error('Webhook processing error:', error);
         }
-      } catch (error) {
-        console.error('Webhook processing error:', error);
+    }
+
+    res.sendStatus(200);
+});
+  
+
+export const getUserTrips = asyncHandler(async (req, res) => {
+    const { 
+      page = 1, 
+      limit = 10, 
+      status, 
+      dateFrom, 
+      dateTo,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
+  
+    // Check if user is authenticated
+    if (!req.user || !req.user._id) {
+      res.status(401);
+      throw new Error('User not authenticated');
+    }
+  
+    const userId = req.user._id;
+    const skip = (Math.max(Number(page), 1) - 1) * Number(limit);
+  
+    // Build query filter
+    const filter = { user: userId };
+  
+    // Filter by booking status
+    if (status) {
+      if (['pending', 'confirmed', 'cancelled', 'completed'].includes(status)) {
+        filter.status = status;
       }
     }
   
-    res.sendStatus(200);
+    // Filter by payment status
+    if (req.query.paymentStatus) {
+      if (['pending', 'paid', 'failed', 'refunded'].includes(req.query.paymentStatus)) {
+        filter.paymentStatus = req.query.paymentStatus;
+      }
+    }
+  
+    // Filter by date range (booking creation date)
+    if (dateFrom || dateTo) {
+      filter.createdAt = {};
+      if (dateFrom) {
+        const fromDate = new Date(dateFrom);
+        if (Number.isNaN(fromDate.getTime())) {
+          res.status(400);
+          throw new Error('Invalid dateFrom format');
+        }
+        filter.createdAt.$gte = fromDate;
+      }
+      if (dateTo) {
+        const toDate = new Date(dateTo);
+        if (Number.isNaN(toDate.getTime())) {
+          res.status(400);
+          throw new Error('Invalid dateTo format');
+        }
+        toDate.setHours(23, 59, 59, 999); // End of the day
+        filter.createdAt.$lte = toDate;
+      }
+    }
+  
+    // Sort configuration
+    const sortOptions = {};
+    const validSortFields = ['createdAt', 'departureDate', 'totalAmount', 'updatedAt'];
+    const sortField = validSortFields.includes(sortBy) ? sortBy : 'createdAt';
+    const order = sortOrder === 'asc' ? 1 : -1;
+    sortOptions[sortField] = order;
+  
+    try {
+      const [total, bookings] = await Promise.all([
+        Booking.countDocuments(filter),
+        Booking.find(filter)
+          .sort(sortOptions)
+          .skip(skip)
+          .limit(Number(limit))
+          .populate('trip', 'route departureDate departureTime computedArrival durationMinutes')
+          .populate('company', 'name logoUrl')
+          .populate('vehicle', 'name model type registrationNumber')
+          .lean()
+      ]);
+  
+      // Map the response
+      const userTrips = bookings.map(booking => {
+        const trip = booking.trip || {};
+        const company = booking.company || {};
+        const vehicle = booking.vehicle || {};
+        
+        // Parse route
+        const routeParts = (trip.route || '').split('-');
+        const from = routeParts[0]?.trim() || null;
+        const to = routeParts[1]?.trim() || null;
+  
+        // Format dates
+        const departureDate = trip.departureDate ? trip.departureDate.toISOString().slice(0, 10) : null;
+        const departureTime = trip.departureTime || null;
+        const arrivalTime = trip.computedArrival ? trip.computedArrival.toISOString().slice(11, 16) : null;
+  
+        return {
+          bookingId: booking._id,
+          reference: booking.reference,
+          trip: {
+            id: trip._id,
+            route: {
+              from,
+              to,
+              display: trip.route
+            },
+            departure: {
+              date: departureDate,
+              time: departureTime,
+              combined: trip.departureDate ? new Date(`${departureDate}T${departureTime}`).toISOString() : null
+            },
+            arrival: {
+              time: arrivalTime,
+              combined: trip.computedArrival ? trip.computedArrival.toISOString() : null,
+              duration: trip.durationMinutes ? `${Math.floor(trip.durationMinutes / 60)}h${trip.durationMinutes % 60}m` : null
+            }
+          },
+          company: {
+            id: company._id,
+            name: company.name,
+            logoUrl: company.logoUrl || null
+          },
+          vehicle: {
+            id: vehicle._id,
+            name: vehicle.name,
+            model: vehicle.model,
+            type: vehicle.type,
+            registrationNumber: vehicle.registrationNumber || null
+          },
+          bookingDetails: {
+            seatNumbers: booking.seatNumbers || [],
+            seats: booking.seats,
+            pricePerSeat: booking.pricePerSeat,
+            totalAmount: booking.totalAmount,
+            currency: 'NGN',
+            displayAmount: `₦${booking.totalAmount?.toLocaleString() || '0'}`
+          },
+          customer: booking.customer,
+          status: {
+            booking: booking.status,
+            payment: booking.paymentStatus
+          },
+          payment: {
+            method: booking.paymentMethod,
+            reference: booking.paymentDetails?.reference || null,
+            paidAt: booking.paidAt || null
+          },
+          dates: {
+            bookedAt: booking.createdAt,
+            updatedAt: booking.updatedAt
+          },
+          actions: {
+            canCancel: booking.status === 'confirmed' || booking.status === 'pending',
+            canModify: booking.status === 'confirmed',
+            canViewReceipt: booking.paymentStatus === 'paid'
+          }
+        };
+      });
+  
+      res.json({
+        total,
+        page: Number(page),
+        limit: Number(limit),
+        pages: Math.ceil(total / Number(limit)),
+        trips: userTrips,
+        filters: {
+          status: status || 'all',
+          dateFrom: dateFrom || null,
+          dateTo: dateTo || null,
+          sortBy: sortField,
+          sortOrder: order === 1 ? 'asc' : 'desc'
+        }
+      });
+  
+    } catch (error) {
+      console.error('Error fetching user trips:', error);
+      res.status(500);
+      throw new Error('Failed to fetch user trips');
+    }
   });
+  
   
