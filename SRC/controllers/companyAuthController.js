@@ -6,7 +6,6 @@ import sendEmail from '../utils/sendEmail.js';
 const signToken = (id, expiresIn = '1d') =>
   jwt.sign({ id, type: 'company' }, process.env.JWT_SECRET, { expiresIn });
 
-// Register (signup) company
 export const registerCompany = async (req, res) => {
   try {
     const { name, email, companyName, password, confirmPassword, phoneNumber } = req.body;
@@ -25,14 +24,12 @@ export const registerCompany = async (req, res) => {
     }
 
     const company = await Company.create({
-      name, email, companyName, password, phoneNumber
+      name, email,       companyName, password, phoneNumber
     });
 
-    // create verification token (expiry in 1 hour)
     const verificationToken = signToken(company._id, '1h');
     const verificationUrl = `${process.env.FRONTEND_URL}/company/verify-email?token=${verificationToken}`;
 
-    // send verification email
     await sendEmail({
       to: company.email,
       subject: 'Verify your company account',
@@ -41,7 +38,6 @@ export const registerCompany = async (req, res) => {
              <a href="${verificationUrl}">Verify Company Email</a>`
     });
 
-    // Return token for testing (we can remove in prod if we want)
     return res.status(201).json({
       success: true,
       message: 'Company created. Check email to verify.',
@@ -60,7 +56,6 @@ export const registerCompany = async (req, res) => {
   }
 };
 
-// Verify company email (from link sent to company's email)
 export const verifyCompanyEmail = async (req, res) => {
   try {
     const { token } = req.query;
@@ -92,7 +87,6 @@ export const verifyCompanyEmail = async (req, res) => {
   }
 };
 
-// Login company
 export const loginCompany = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -129,7 +123,6 @@ export const loginCompany = async (req, res) => {
   }
 };
 
-// Forgot password for company
 export const forgotCompanyPassword = async (req, res) => {
   try {
     const { email } = req.body;
@@ -137,14 +130,13 @@ export const forgotCompanyPassword = async (req, res) => {
 
     const company = await Company.findOne({ email });
     if (!company) {
-      // generic response to avoid user enumeration
       return res.status(200).json({ success: true, message: 'If an account with that email exists, a reset link has been sent.' });
     }
 
     const resetToken = crypto.randomBytes(32).toString('hex');
     const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
     company.passwordResetToken = hashedToken;
-    company.passwordResetExpires = Date.now() + (60 * 60 * 1000); // expiry in 1 hour
+    company.passwordResetExpires = Date.now() + (60 * 60 * 1000);
     await company.save({ validateBeforeSave: false });
 
     const resetUrl = `${process.env.FRONTEND_URL}/company/reset-password?token=${resetToken}`;
@@ -158,7 +150,6 @@ export const forgotCompanyPassword = async (req, res) => {
     try {
       await sendEmail({ to: company.email, subject: 'Company password reset', html });
     } catch (emailErr) {
-      // cleanup on email failure
       company.passwordResetToken = undefined;
       company.passwordResetExpires = undefined;
       await company.save({ validateBeforeSave: false });
@@ -173,7 +164,6 @@ export const forgotCompanyPassword = async (req, res) => {
   }
 };
 
-// Reset company password (no auto-login)
 export const resetCompanyPassword = async (req, res) => {
   try {
     const token = req.params.token || req.query.token || req.body.token;

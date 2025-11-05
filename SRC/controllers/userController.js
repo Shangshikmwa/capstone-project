@@ -1,4 +1,4 @@
-import User from '../models/user.models.js';
+import User from '../models/userModel.js';
 
 
 export const getUser = async (req, res) => {
@@ -26,7 +26,6 @@ export const getUser = async (req, res) => {
   
       const query = {};
   
-      //search by name or email
       if (search) {
         query.$or = [
           { name: { $regex: search, $options: "i" } },

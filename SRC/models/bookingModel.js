@@ -5,8 +5,8 @@ const BookingSchema = new mongoose.Schema({
   trip: { type: mongoose.Schema.Types.ObjectId, ref: 'Trip', required: true, index: true },
   vehicle: { type: mongoose.Schema.Types.ObjectId, ref: 'Vehicle', required: true },
 
-  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // if authenticated
-  seatNumbers: { type: [String], required: true }, // e.g. ["1A","1B"]
+  user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  seatNumbers: { type: [String], required: true },
   seats: { type: Number, required: true, min: 1 },
 
   pricePerSeat: { type: Number, required: true, min: 0 }, 

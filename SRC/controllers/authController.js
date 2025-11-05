@@ -1,4 +1,4 @@
-import User from '../models/user.models.js';
+import User from '../models/userModel.js';
 import jwt from 'jsonwebtoken';
 import sendEmail from '../utils/sendEmail.js';
 import crypto from 'crypto';
@@ -6,10 +6,9 @@ import crypto from 'crypto';
 const signToken = (userId, expiresIn = '1d') =>
   jwt.sign({ id: userId }, process.env.JWT_SECRET, { expiresIn });
 
-// Register user
 export const registerUser = async (req, res) => {
   try {
-    const { name, email, password, confirmPassword } = req.body;
+    const { name, email, password, confirmPassword, phone } = req.body;
 
     if (password !== confirmPassword) {
       return res.status(400).json({ success: false, error: 'Passwords do not match' });
@@ -20,15 +19,11 @@ export const registerUser = async (req, res) => {
       return res.status(400).json({ success: false, error: 'Email already registered' });
     }
 
-    const newUser = await User.create({ name, email, password });
+    const newUser = await User.create({ name, email, password, phone });
 
-    // Generate verification token that expires in 1h)
     const verificationToken = signToken(newUser._id, '1h');
-
-    // Verification link that will be sent to the user's email
     const verificationUrl = `${process.env.FRONTEND_URL}/auth/verify-email?token=${verificationToken}`;
 
-    // Send email to the user's email with the verification link
     await sendEmail({
       to: newUser.email,
       subject: 'Verify your account',
@@ -37,7 +32,6 @@ export const registerUser = async (req, res) => {
              <a href="${verificationUrl}">Verify Email</a>`
     });
 
-    // Return token in JSON for testing purposes
     res.status(201).json({
       success: true,
       message: 'User registered. Check email to verify.',
@@ -45,7 +39,8 @@ export const registerUser = async (req, res) => {
       user: {
         id: newUser._id,
         name: newUser.name,
-        email: newUser.email
+        email: newUser.email,
+        phone: newUser.phone
       }
     });
   } catch (error) {
@@ -60,7 +55,6 @@ export const verifyUserEmail = async (req, res) => {
 
     if (!token) return res.status(400).json({ success: false, error: 'Token is required' });
 
-    // Verify token sent to the user's email
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const user = await User.findById(decoded.id);
@@ -70,11 +64,9 @@ export const verifyUserEmail = async (req, res) => {
       return res.status(200).json({ success: true, message: 'User already verified' });
     }
 
-    // Activate user
     user.active = true;
     await user.save();
 
-    // Send welcome/confirmation email after successful verification
     try {
       await sendEmail({
         to: user.email,
@@ -107,23 +99,19 @@ export const loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // basic validation for email and password
         if (!email || !password) {
         return res.status(400).json({ success: false, error: 'Email and password are required' });
         }
 
-        // find user with email and password
         const user = await User.findOne({ email }).select('+password +active');
         if (!user) {
         return res.status(401).json({ success: false, error: 'Incorrect email or password' });
         }
 
-        // check if user is active/verified
         if (user.active === false) {
         return res.status(403).json({ success: false, error: 'Account not verified. Please verify your email.' });
         }
 
-        // validate password for the user
         const valid = await user.correctPassword(password, user.password);
         if (!valid) {
         return res.status(401).json({ success: false, error: 'Incorrect email or password' });
@@ -141,6 +129,7 @@ export const loginUser = async (req, res) => {
             id: user._id,
             name: user.name,
             email: user.email,
+            phone: user.phone,
             role: user.role
             }
         }
@@ -162,11 +151,8 @@ export const forgotPassword = async (req, res) => {
         return res.status(200).json({ success: true, message: 'If you have an account with us with the email, a reset link has been sent.' });
         }
 
-        //This generate token and store hashed token in our database
         const resetToken = crypto.randomBytes(32).toString('hex');
         const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-
-        // expiry: 1 hour
         const expires = Date.now() + (60 * 60 * 1000);
 
         user.passwordResetToken = hashedToken;
@@ -175,7 +161,6 @@ export const forgotPassword = async (req, res) => {
 
         const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
 
-        //Send email to the user's email with the reset link
         const html = `
         <p>Hello ${user.name || ''},</p>
         <p>You requested a password reset. Click the link below to reset your password. This link expires in 1 hour.</p>
@@ -186,7 +171,6 @@ export const forgotPassword = async (req, res) => {
         try {
         await sendEmail({ to: user.email, subject: 'Password reset', html });
         } catch (emailErr) {
-        // We cleanup if there is an email failure
         user.passwordResetToken = undefined;
         user.passwordResetExpires = undefined;
         await user.save({ validateBeforeSave: false });
@@ -213,7 +197,6 @@ export const resetPassword = async (req, res) => {
         if (!password || !confirmPassword) return res.status(400).json({ success: false, error: 'Password and confirmPassword are required' });
         if (password !== confirmPassword) return res.status(400).json({ success: false, error: 'Passwords do not match' });
 
-        // Hash token and search to match with the hashed token in our database
         const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
 
         const user = await User.findOne({
@@ -223,7 +206,6 @@ export const resetPassword = async (req, res) => {
 
         if (!user) return res.status(400).json({ success: false, error: 'Token is invalid or has expired' });
 
-        // Update password and clear reset fields to avoid reusing the token
         user.password = password;
         user.passwordResetToken = undefined;
         user.passwordResetExpires = undefined;
@@ -240,8 +222,6 @@ export const resetPassword = async (req, res) => {
     }
 };
 
-
-//assign admin role to a user
 export const promoteToAdmin = async (req, res) => {
     try {
         const { userId, email } = req.body;

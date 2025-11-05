@@ -1,4 +1,3 @@
-// controllers/tripController.js
 import asyncHandler from 'express-async-handler';
 import mongoose from 'mongoose';
 import Vehicle from '../models/vehicleModel.js';

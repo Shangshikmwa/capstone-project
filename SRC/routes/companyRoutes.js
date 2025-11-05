@@ -7,6 +7,6 @@ router.post('/register', companyAuthController.registerCompany);
 router.get('/verify-email', companyAuthController.verifyCompanyEmail);
 router.post('/login', companyAuthController.loginCompany);
 router.post('/forgot-password', companyAuthController.forgotCompanyPassword);
-router.post('/reset-password/:token', companyAuthController.resetCompanyPassword);
+router.post('/reset-password', companyAuthController.resetCompanyPassword);
 
 export default router;

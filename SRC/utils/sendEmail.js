@@ -2,7 +2,6 @@ import nodemailer from 'nodemailer';
 
 const sendEmail = async ({ to, subject, html }) => {
   try {
-    // Create transporter
     const transporter = nodemailer.createTransport({
         service: 'gmail',
         auth: {
@@ -11,7 +10,6 @@ const sendEmail = async ({ to, subject, html }) => {
         }
     });
 
-    // Send mail
     await transporter.sendMail({
       from: `"SmartTransit" <${process.env.EMAIL_USERNAME}>`,
       to,

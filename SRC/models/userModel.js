@@ -15,6 +15,13 @@ const userSchema = new mongoose.Schema({
       lowercase: true,
       validate: [validator.isEmail, 'Invalid email']
     },
+    phone: {
+      type: String,
+      required: [true, 'Phone is required'],
+      unique: true,
+      trim: true,
+      validate: [validator.isMobilePhone, 'Invalid phone number']
+    },
     password: {
       type: String,
       required: [true, 'Password is required'],
@@ -48,7 +55,6 @@ const userSchema = new mongoose.Schema({
     timestamps: true 
   });
 
-  // Password comparison method
 userSchema.methods.correctPassword = async function(candidatePassword, userPassword) {
   return await bcrypt.compare(candidatePassword, userPassword);
 };

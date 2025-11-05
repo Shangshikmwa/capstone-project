@@ -1,6 +1,5 @@
-// SRC/middleware/protect.js
 import jwt from 'jsonwebtoken';
-import User from '../models/user.models.js';
+import User from '../models/userModel.js';
 
 
 const getTokenFromRequest = (req) => {
@@ -9,7 +8,7 @@ const getTokenFromRequest = (req) => {
 
   if (req.cookies && req.cookies.jwt) return req.cookies.jwt;
 
-  if (req.query && req.query.token) return req.query.token; // testing only - remove for prod
+  if (req.query && req.query.token) return req.query.token;
 
   return null;
 };

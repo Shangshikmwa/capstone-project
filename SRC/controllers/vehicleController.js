@@ -53,7 +53,6 @@ export const registerVehicle = asyncHandler(async (req, res) => {
     throw err;
   }
 
-  // Optional: create initial trips if provided (not wrapped in transaction here)
   let createdTrips = [];
   if (Array.isArray(createTrips) && createTrips.length > 0) {
     const tripsToInsert = createTrips.map((t) => {
@@ -84,7 +83,6 @@ export const registerVehicle = asyncHandler(async (req, res) => {
     try {
       createdTrips = await Trip.insertMany(tripsToInsert);
     } catch (err) {
-      // vehicle created successfully; trips failed
       res.status(500); throw new Error(`Vehicle created but creating trips failed: ${err.message}`);
     }
   }
@@ -134,7 +132,6 @@ export const updateVehicle = asyncHandler(async (req, res) => {
   const vehicle = await Vehicle.findOne({ _id: id, company: companyId, isDeleted: false });
   if (!vehicle) { res.status(404); throw new Error('Vehicle not found or not owned by your company'); }
 
-  // allowed updates
   const allowed = ['name','model','type','registrationNumber','terminal','route','isAvailable','seatCapacity','pricePerSeat','defaultDepartureTime','features','images','notes'];
   let changed = false;
   for (const key of allowed) {
@@ -144,7 +141,6 @@ export const updateVehicle = asyncHandler(async (req, res) => {
     }
   }
 
-  // if any defaults changed that should track version, increment version
   if (changed) vehicle.version = (vehicle.version || 1) + 1;
 
   try {

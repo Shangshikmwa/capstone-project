@@ -51,12 +51,10 @@ const companySchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-// instance method: compare password
 companySchema.methods.correctPassword = async function(candidatePassword, userPassword) {
   return await bcrypt.compare(candidatePassword, userPassword);
 };
 
-// pre-save hook: hash password if modified
 companySchema.pre('save', async function(next) {
   if (!this.isModified('password')) return next();
   this.password = await bcrypt.hash(this.password, 12);
