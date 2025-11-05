@@ -55,31 +55,53 @@ export const registerUser = async (req, res) => {
 };
 
 export const verifyUserEmail = async (req, res) => {
-    try {
-      const { token } = req.query;
-  
-      if (!token) return res.status(400).json({ success: false, error: 'Token is required' });
-  
-      // Verify token sent to the user's email
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-  
-      const user = await User.findById(decoded.id);
-      if (!user) return res.status(404).json({ success: false, error: 'User not found' });
-  
-      if (user.active) {
-        return res.status(200).json({ success: true, message: 'User already verified' });
-      }
-  
-      // Activate user
-      user.active = true;
-      await user.save();
-  
-      res.status(200).json({ success: true, message: 'User verified successfully' });
-    } catch (error) {
-      console.error('verifyUserEmail error:', error);
-      res.status(400).json({ success: false, error: 'Invalid or expired token' });
+  try {
+    const { token } = req.query;
+
+    if (!token) return res.status(400).json({ success: false, error: 'Token is required' });
+
+    // Verify token sent to the user's email
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    const user = await User.findById(decoded.id);
+    if (!user) return res.status(404).json({ success: false, error: 'User not found' });
+
+    if (user.active) {
+      return res.status(200).json({ success: true, message: 'User already verified' });
     }
-  };
+
+    // Activate user
+    user.active = true;
+    await user.save();
+
+    // Send welcome/confirmation email after successful verification
+    try {
+      await sendEmail({
+        to: user.email,
+        subject: 'Welcome to SmartTransit - Email Verified Successfully!',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #333;">Welcome to SmartTransit!</h2>
+            <p>Dear ${user.name || user.email},</p>
+            <p>Your email has been successfully verified and your account is now active.</p>
+            <p>You can now log in and start using SmartTransit, book your rides, and much more.</p>
+            <br>
+            <p>If you have any questions, feel free to contact our support team.</p>
+            <br>
+            <p>Best regards,<br>SmartTransit Team</p>2
+          </div>
+        `
+      });
+    } catch (emailError) {
+      console.error('Email sending error:', emailError);
+    }
+
+    res.status(200).json({ success: true, message: 'User verified successfully' });
+  } catch (error) {
+    console.error('verifyUserEmail error:', error);
+    res.status(400).json({ success: false, error: 'Invalid or expired token' });
+  }
+};
 
 export const loginUser = async (req, res) => {
     try {
