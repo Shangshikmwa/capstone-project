@@ -50,3 +50,38 @@ export const initializePayment = async (email, amount, reference, metadata = {},
       throw new Error(`Payment initialization failed: ${error.message}`);
     }
   };
+
+  export const verifyPayment = async (reference) => {
+    try {
+      if (!process.env.PAYSTACK_SECRET_KEY) {
+        throw new Error('PAYSTACK_SECRET_KEY is not configured');
+      }
+  
+      console.log('Verifying Paystack payment:', reference);
+  
+      const response = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json',
+        },
+      });
+  
+      const data = await response.json();
+  
+      if (!data.status) {
+        throw new Error(`Paystack verification failed: ${data.message || 'Unknown error'}`);
+      }
+  
+      if (!data.data) {
+        throw new Error('Paystack verification response missing data');
+      }
+  
+      console.log('Payment verified successfully');
+      return data.data;
+  
+    } catch (error) {
+      console.error('Paystack verification error:', error);
+      throw new Error(`Payment verification failed: ${error.message}`);
+    }
+  };
