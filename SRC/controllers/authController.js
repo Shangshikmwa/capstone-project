@@ -159,7 +159,7 @@ export const forgotPassword = async (req, res) => {
         user.passwordResetExpires = new Date(expires);
         await user.save({ validateBeforeSave: false }); 
 
-        const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`;
+        const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth/reset-password?token=${resetToken}`;
 
         const html = `
         <p>Hello ${user.name || ''},</p>
