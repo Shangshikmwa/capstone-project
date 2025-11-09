@@ -3,15 +3,17 @@ import nodemailer from 'nodemailer';
 const sendEmail = async ({ to, subject, html }) => {
   try {
     const transporter = nodemailer.createTransport({
-        service: 'gmail',
+        host: 'smtp.sendgrid.net',
+        port: 587,
+        secure: false, // true for 465, false for other ports
         auth: {
-          user: process.env.EMAIL_USERNAME,
-          pass: process.env.EMAIL_PASSWORD
+          user: 'apikey',
+          pass: process.env.SENDGRID_API_KEY
         }
     });
 
     await transporter.sendMail({
-      from: `"SmartTransit" <${process.env.EMAIL_USERNAME}>`,
+      from: `"SmartTransit" <${process.env.FROM_EMAIL}>`,
       to,
       subject,
       html
