@@ -302,6 +302,99 @@ GET /v1/auth/get-user/:id
 }
 ```
 
+#### 10. Get All Companies (Admin)
+```http
+GET /v1/auth/get-all-company
+```
+
+**Authentication:** Required (Admin only)
+
+**Query Parameters:**
+- `page` (optional): Page number (default: 1)
+- `limit` (optional): Items per page (default: 20)
+- `search` (optional): Search by company name, contact name, email, or phone
+- `active` (optional): Filter by active status (`true`/`false`)
+
+**Response:** `200 OK`
+```json
+{
+  "success": true,
+  "results": 2,
+  "page": 1,
+  "limit": 20,
+  "totalPages": 1,
+  "totalCompanies": 2,
+  "data": [
+    {
+      "_id": "company_id",
+      "name": "John Manager",
+      "email": "company@example.com",
+      "companyName": "ABC Transport Ltd",
+      "phoneNumber": "+2348012345678",
+      "role": "company",
+      "active": true,
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+#### 11. Get All Vehicles (Admin)
+```http
+GET /v1/auth/get-all-vehicles
+```
+
+**Authentication:** Required (Admin only)
+
+**Query Parameters:**
+- `page` (optional): Page number (default: 1)
+- `limit` (optional): Items per page (default: 20)
+- `search` (optional): Search by name, model, registration number, route, or terminal
+- `companyId` (optional): Filter by company id
+- `isAvailable` (optional): Filter by availability (`true`/`false`)
+- `route` (optional): Filter by route (case-insensitive partial match)
+- `terminal` (optional): Filter by terminal (case-insensitive partial match)
+- `includeDeleted` (optional): Include soft-deleted vehicles (`true` to include; default excludes)
+
+**Response:** `200 OK`
+```json
+{
+  "success": true,
+  "results": 10,
+  "page": 1,
+  "limit": 20,
+  "totalPages": 1,
+  "totalVehicles": 10,
+  "data": [
+    {
+      "_id": "vehicle_id",
+      "company": {
+        "_id": "company_id",
+        "companyName": "ABC Transport Ltd",
+        "name": "John Manager",
+        "email": "company@example.com",
+        "phoneNumber": "+2348012345678",
+        "role": "company"
+      },
+      "name": "Luxury Bus",
+      "model": "2024",
+      "type": "Bus",
+      "registrationNumber": "ABC-123-XY",
+      "terminal": "Lagos Terminal",
+      "route": "Lagos - Abuja",
+      "isAvailable": true,
+      "seatCapacity": 50,
+      "pricePerSeat": 5000,
+      "defaultDepartureTime": "06:00",
+      "isDeleted": false,
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    }
+  ]
+}
+```
+
 ---
 
 ### Company Authentication Routes
